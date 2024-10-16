@@ -1,8 +1,10 @@
 """Honeycomb utilities."""
+
 from asyncio import sleep
 from typing import Final, NoReturn
 
 from aiohttp import ClientSession
+from orjson import dumps
 
 from . import Span, Tracer
 

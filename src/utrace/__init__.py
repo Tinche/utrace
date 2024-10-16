@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
 from itertools import count
 from random import random
 from secrets import token_hex
@@ -22,17 +21,21 @@ _trace_cnt = count().__next__
 _span_cnt = count().__next__
 _trace_prefix = token_hex(8)
 
+type Instant = float
+type DurationMS = float  # Milliseconds
+type Metadata = dict[str, str | int]
+
 Span = TypedDict(
     "Span",
     {
         "name": str,
-        "time": float,
-        "duration_ms": float,
+        "time": Instant,
+        "duration_ms": DurationMS,
         "service.name": str,
         "trace.trace_id": str,
         "trace.span_id": str,
         "trace.parent_id": NotRequired[str],
-        "metadata": dict[str, str | int],
+        "metadata": Metadata,
     },
 )
 
@@ -149,7 +152,7 @@ class Tracer(TracerBase):
 
         Return a dictionary that can be used to add metadata.
         """
-        with self._trace(name, **kwargs) as md:
+        with self._trace(name, {}, **kwargs) as md:
             yield md
 
     @contextmanager
@@ -232,7 +235,7 @@ def print_trace(spans: list[Span]) -> None:
 
 def _process_children(
     parent: Span, spans: list[Span], start: float, end: float, tree: Tree
-) -> list[tuple[str, float, float, float, dict[str, str]]]:
+) -> list[tuple[str, Instant, Instant, float, dict[str, str | int]]]:
     total_duration = end - start
     span_duration = parent["duration_ms"] / 1000
     start_pct = (parent["time"] - start) / total_duration

@@ -1,1 +1,1 @@
-The alpha release of what is to become `pocket-tracing`.
+utrace is a microframework for low-overhead tracing.

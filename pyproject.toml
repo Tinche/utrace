@@ -14,13 +14,14 @@ dependencies = [
     "orjson",
     "rich",
 ]
-requires-python = ">= 3.8"
+requires-python = ">= 3.12"
 
 [project.optional-dependencies]
 lint = [
-    "black",
+    "ruff",
     "mypy",
 ]
+test = ["pytest"]
 
 [project.urls]
 Home = "https://github.com/Tinche/utrace"

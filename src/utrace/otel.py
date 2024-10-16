@@ -1,13 +1,14 @@
+from asyncio import sleep
 from contextlib import contextmanager
+from os import urandom
 from typing import Callable, Iterator, Literal, NoReturn, NotRequired, TypedDict
 
 from aiohttp import ClientSession
 from attrs import define
 from orjson import dumps
 
-from . import TracerBase, Span as PocketSpan
-from asyncio import sleep
-from os import urandom
+from . import Span as USpan
+from . import TracerBase
 
 
 def trace_id_factory() -> str:
@@ -45,7 +46,7 @@ class Tracer(TracerBase):
         self,
         name: str,
         *,
-        parent: tuple[str, str, list[PocketSpan]] | None = None,
+        parent: tuple[str, str, list[USpan]] | None = None,
         kind: Literal[
             "client", "server", "internal", "producer", "consumer"
         ] = "server",
@@ -89,8 +90,14 @@ class Scope(TypedDict):
     attributes: list[KVPair]
 
 
+class InstrumentationScope(TypedDict):
+    name: NotRequired[str]
+    version: NotRequired[str]
+    attributes: NotRequired[list[KVPair]]
+
+
 class ScopeSpan(TypedDict):
-    scope: Scope
+    scope: InstrumentationScope
     spans: list[Span]
 
 
@@ -106,10 +113,10 @@ class Payload(TypedDict):
 async def send_to_otel(
     tracer: Tracer, http_client: ClientSession, url: str
 ) -> NoReturn:
-    """Continually send traces to Honeycomb, until cancelled."""
-    buffer: list[PocketSpan] = []
+    """Continually send traces to an OTel receiver, until cancelled."""
+    buffer: list[USpan] = []
 
-    def add_to_buffer(spans: list[PocketSpan]) -> None:
+    def add_to_buffer(spans: list[USpan]) -> None:
         if len(buffer) < 1000:
             buffer.extend(spans)
 
@@ -119,8 +126,8 @@ async def send_to_otel(
         while len(buffer) > 5:
             buf = buffer
             buffer = []
-            payload = dumps(_pt_spans_to_otel(tracer, buf))
-            with tracer.trace("pockettracing.send", kind="client", num_spans=len(buf)):
+            payload = dumps(_utrace_spans_to_otel(tracer, buf))
+            with tracer.trace("utrace.send", kind="client", num_spans=len(buf)):
                 resp = await http_client.post(
                     url, data=payload, headers={"content-type": "application/json"}
                 )
@@ -129,8 +136,8 @@ async def send_to_otel(
         await sleep(5)
 
 
-def _pt_spans_to_otel(tracer: Tracer, spans: list[PocketSpan]) -> Payload:
-    """Convert pocket spans into OTel spans."""
+def _utrace_spans_to_otel(tracer: Tracer, spans: list[USpan]) -> Payload:
+    """Convert utrace spans into OTel spans."""
     return {
         "resourceSpans": [
             {
@@ -143,7 +150,7 @@ def _pt_spans_to_otel(tracer: Tracer, spans: list[PocketSpan]) -> Payload:
                 "scopeSpans": [
                     {
                         "scope": {},
-                        "spans": [_pt_span_to_otel(span) for span in spans],
+                        "spans": [_utrace_span_to_otel(span) for span in spans],
                     }
                 ],
             }
@@ -154,7 +161,7 @@ def _pt_spans_to_otel(tracer: Tracer, spans: list[PocketSpan]) -> Payload:
 _KIND_TO_OTEL = {"internal": 1, "server": 2, "client": 3, "producer": 4, "consumer": 5}
 
 
-def _pt_span_to_otel(span: PocketSpan) -> Span:
+def _utrace_span_to_otel(span: USpan) -> Span:
     res: Span = {
         "traceId": span["trace.trace_id"],
         "spanId": span["trace.span_id"],

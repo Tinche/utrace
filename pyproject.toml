@@ -3,16 +3,24 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "pockettracing"
-authors = [{name = "Tin Tvrtkovic", email = "tin@high.rs"}]
+name = "utrace"
+authors = [{name = "Tin Tvrtkovic", email = "tinchester@gmail.com"}]
 classifiers = ["License :: OSI Approved :: MIT License"]
-version = "22.1.0.dev0
+version = "24.1.0.dev0"
 dynamic = ["description"]
 dependencies = [
     "attrs",
     "aiohttp",
     "orjson",
+    "rich",
+]
+requires-python = ">= 3.8"
+
+[project.optional-dependencies]
+lint = [
+    "black",
+    "mypy",
 ]
 
 [project.urls]
-Home = "https://github.com/pocketzworld/pockettracing"
+Home = "https://github.com/Tinche/utrace"

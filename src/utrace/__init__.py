@@ -1,4 +1,5 @@
 """The beginnings of a simple tracing module."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from rich.tree import Tree
 
 _trace_cnt = count().__next__
 _span_cnt = count().__next__
+_trace_prefix = token_hex(8)
 
 Span = TypedDict(
     "Span",
@@ -30,24 +32,31 @@ Span = TypedDict(
         "trace.trace_id": str,
         "trace.span_id": str,
         "trace.parent_id": NotRequired[str],
+        "metadata": dict[str, str | int],
     },
 )
 
 
 @define
-class Tracer:
-    """A tracer for generating traces to be sent to a tracing service."""
+class TracerBase:
+    """
+    A base class for various tracers, so they can have different
+    public APIS.
+    """
 
     metadata: dict[str, str] = {}  # Should contain service.name.
     receivers: list[Callable[[list[Span]], None]] = []
-    trace_prefix: str = Factory(lambda: token_hex(8))
     trace_chance: float | None = None
+    _trace_id_factory: Callable[[], str] = lambda: f"{_trace_prefix}:{_trace_cnt()}"
+    _span_id_factory: Callable[[], str] = lambda: f"{_trace_prefix}:{_span_cnt()}"
     _active_trace_and_span: ContextVar[tuple[str, str, list[Span]] | None] = Factory(
         lambda: ContextVar("active", default=None)
     )
 
     @contextmanager
-    def trace(self, name: str, **kwargs: str) -> Iterator[dict[str, str]]:
+    def _trace(
+        self, name: str, span_metadata: dict[str, str | int] = {}, **kwargs: str | int
+    ) -> Iterator[dict[str, str | int]]:
         """Start a trace and a span, trace_chance permitting.
 
         Return a dictionary that can be used to add metadata.
@@ -55,8 +64,8 @@ class Tracer:
         if self.trace_chance is not None and random() > self.trace_chance:
             yield {}
             return
-        trace_id = f"{self.trace_prefix}:{_trace_cnt()}"
-        span_id = f"{self.trace_prefix}:span:{_span_cnt()}"
+        trace_id = self._trace_id_factory()
+        span_id = self._span_id_factory()
         start = time()
         duration_start = perf_counter()
         trace_metadata = kwargs
@@ -78,21 +87,22 @@ class Tracer:
                     "duration_ms": duration * 1000,
                     "trace.trace_id": trace_id,
                     "trace.span_id": span_id,
+                    "metadata": span_metadata,
                 }
                 | trace_metadata
             )
             self._emit(child_spans)
 
     @contextmanager
-    def span(
+    def _span(
         self,
         name: str,
         parent: tuple[str, str, list[Span]] | None = None,
-        **kwargs: str,
-    ) -> Iterator[dict[str, str]]:
+        **kwargs: str | int,
+    ) -> Iterator[dict[str, str | int]]:
         """Start a new span, if there is a trace active."""
         parent = parent or self._active_trace_and_span.get()
-        span_metadata: dict[str, str] = kwargs
+        span_metadata: dict[str, str | int] = kwargs
         if parent is None:
             yield span_metadata
             return
@@ -100,7 +110,7 @@ class Tracer:
         trace_id, parent_span_id, children = parent
         start = time()
         duration_start = perf_counter()
-        span_id = f"{self.trace_prefix}:span:{_span_cnt()}"
+        span_id = self._span_id_factory()
         token = self._active_trace_and_span.set((trace_id, span_id, children))
         try:
             yield span_metadata
@@ -119,14 +129,44 @@ class Tracer:
                     "trace.trace_id": trace_id,
                     "trace.span_id": span_id,
                     "trace.parent_id": parent_span_id,
+                    "metadata": span_metadata,
                 }
-                | span_metadata
             )
+
+    def _emit(self, spans: list[Span]) -> None:
+        """When a unit of work is finished, notify all receivers."""
+        for receiver in self.receivers:
+            receiver(spans)
+
+
+@define
+class Tracer(TracerBase):
+    """A tracer for generating traces to be sent to a tracing service."""
+
+    @contextmanager
+    def trace(self, name: str, **kwargs: str | int) -> Iterator[dict[str, str | int]]:
+        """Start a trace and a span, trace_chance permitting.
+
+        Return a dictionary that can be used to add metadata.
+        """
+        with self._trace(name, **kwargs) as md:
+            yield md
+
+    @contextmanager
+    def span(
+        self,
+        name: str,
+        parent: tuple[str, str, list[Span]] | None = None,
+        **kwargs: str | int,
+    ) -> Iterator[dict[str, str | int]]:
+        """Start a new span, if there is a trace active."""
+        with self._span(name, parent, **kwargs) as md:
+            yield md
 
     @contextmanager
     def span_from_dict(
         self, name: str, parent_dict: Mapping[str, str], **kwargs: str
-    ) -> Iterator[dict[str, str]]:
+    ) -> Iterator[dict[str, str | int]]:
         """Start a child span, if possible."""
         if "_trace" not in parent_dict:
             yield {}
@@ -144,59 +184,6 @@ class Tracer:
     def span_to_dict(self) -> dict[str, str]:
         parent = self._active_trace_and_span.get()
         return {} if parent is None else {"_trace": f"{parent[0]},{parent[1]}"}
-
-    def _emit(self, spans: list[Span]) -> None:
-        """When a unit of work is finished, notify all receivers."""
-        for receiver in self.receivers:
-            receiver(spans)
-
-
-def encode_trace(spans: list[Span]) -> None:
-    """Encode a trace for logs and eventual storage in OpenSearch."""
-    from orjson import dumps
-
-    last_span = spans[-1]
-    if "trace.parent_id" not in last_span:
-        # We only send the Trace Group metadata if we're ending
-        # the trace here.
-        # If it was started somewhere else, it will be set there.
-        tg = {
-            "traceGroup": last_span["name"],
-            "traceGroupFields": {
-                "endTime": datetime.fromtimestamp(
-                    last_span["time"] + (last_span["duration_ms"] / 1000)
-                ).isoformat(timespec="microseconds"),
-                "durationInNanos": int(last_span["duration_ms"] * 1_000_000),
-            },
-        }
-    else:
-        tg = {}
-
-    for span in spans:
-        span_dict = {
-            "logger": "trace",
-            "traceId": span["trace.trace_id"],
-            "spanId": span["trace.span_id"],
-            "name": span["name"],
-            "startTime": datetime.fromtimestamp(span["time"]).isoformat(
-                timespec="microseconds"
-            ),
-            "endTime": (
-                datetime.fromtimestamp(
-                    span["time"] + (span["duration_ms"] / 1000)
-                ).isoformat(timespec="microseconds")
-            ),
-            "serviceName": span["service.name"],
-            "durationInNanos": int(span["duration_ms"] * 1_000_000),
-            "parentSpanId": span.get("trace.parent_id", ""),
-        }
-
-        metadata = {
-            k: str(v)
-            for k, v in span.items()
-            if k not in Span.__required_keys__ | Span.__optional_keys__
-        }
-        print(dumps(span_dict | metadata | tg).decode(), flush=True)
 
 
 def print_trace(spans: list[Span]) -> None:
@@ -255,11 +242,7 @@ def _process_children(
             start_pct,
             start_pct + (span_duration / total_duration),
             span_duration,
-            {
-                k: str(v)
-                for k, v in parent.items()
-                if k not in Span.__required_keys__ | Span.__optional_keys__
-            },
+            parent["metadata"],
         )
     ]
     children = [s for s in spans if s.get("trace.parent_id") == parent["trace.span_id"]]

@@ -17,6 +17,8 @@ from rich.console import Group
 from rich.text import Text
 from rich.tree import Tree
 
+__all__ = ["Span", "Tracer", "TracerBase"]
+
 _trace_cnt = count().__next__
 _span_cnt = count().__next__
 _trace_prefix = token_hex(8)

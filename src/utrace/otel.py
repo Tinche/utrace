@@ -21,6 +21,8 @@ def span_id_factory() -> str:
 
 @define
 class Tracer(TracerBase):
+    """An OTel-specific tracer."""
+
     _trace_id_factory: Callable[[], str] = trace_id_factory
     _span_id_factory: Callable[[], str] = span_id_factory
 
@@ -169,7 +171,7 @@ def _utrace_span_to_otel(span: USpan) -> Span:
         "endTimeUnixNano": str(
             int(span["time"] * 1_000_000_000 + span["duration_ms"] * 1_000_000)
         ),
-        "kind": _KIND_TO_OTEL[str(span["metadata"].pop("kind"))],
+        "kind": _KIND_TO_OTEL[str(span["metadata"]["kind"])],
         "name": span["name"],
         "attributes": [
             {
@@ -177,6 +179,7 @@ def _utrace_span_to_otel(span: USpan) -> Span:
                 "value": {"stringValue": v} if isinstance(v, str) else {"intValue": v},  # type: ignore
             }
             for k, v in span["metadata"].items()
+            if k != "kind"
         ],
     }
     if "trace.parent_id" in span:

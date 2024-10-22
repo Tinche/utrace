@@ -42,11 +42,12 @@ class Tracer(TracerBase):
 
         Args:
             trace_metadata: Metadata that will be added to each child span.
+            kwargs: Metadata that will be added to this span.
 
         Returns:
             A dictionary that can be used to add span metadata.
         """
-        with self._trace(name, {"kind": kind, **kwargs}, **trace_metadata) as md:
+        with self._trace(name, trace_metadata, kind=kind, **kwargs) as md:
             yield md
 
     @contextmanager
@@ -122,7 +123,11 @@ class Payload(TypedDict):
 async def send_to_otel(
     tracer: Tracer, http_client: ClientSession, url: str
 ) -> NoReturn:
-    """Continually send traces to an OTel receiver, until cancelled."""
+    """Continually send traces to an OTel receiver via HTTP, until cancelled.
+
+    The OTel collector uses port 4318 by default, and the URL prefix of
+    `/v1/traces`.
+    """
     buffer: list[USpan] = []
 
     def add_to_buffer(spans: list[USpan]) -> None:
@@ -132,7 +137,9 @@ async def send_to_otel(
     tracer.receivers.append(add_to_buffer)
 
     while True:
-        while len(buffer) > 5:
+        # We wait for a minimum number of spans so we don't get ourselves
+        # into a infinite loop, since we generate a span each send.
+        while len(buffer) > 1:
             buf = buffer
             buffer = []
             payload = dumps(_utrace_spans_to_otel(tracer, buf))

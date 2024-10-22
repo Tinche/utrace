@@ -65,7 +65,7 @@ class TracerBase:
         tuple[TraceId, Metadata, SpanId, list[Span]] | None
     ] = field(factory=lambda: ContextVar("active", default=None), init=False)
 
-    def __attrs_post_init(self) -> None:
+    def __attrs_post_init__(self) -> None:
         self.metadata["service.name"] = self.service_name
 
     @contextmanager

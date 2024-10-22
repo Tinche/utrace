@@ -169,12 +169,14 @@ class Tracer(TracerBase):
     """A tracer for generating traces to be sent to a tracing service."""
 
     @contextmanager
-    def trace(self, name: str, **kwargs: str | int) -> Iterator[dict[str, str | int]]:
+    def trace(
+        self, name: str, trace_metadata: Metadata = {}, /, **kwargs: str | int
+    ) -> Iterator[dict[str, str | int]]:
         """Start a trace and a span, trace_chance permitting.
 
         Return a dictionary that can be used to add metadata.
         """
-        with self._trace(name, {}, **kwargs) as md:
+        with self._trace(name, trace_metadata, **kwargs) as md:
             yield md
 
     @contextmanager

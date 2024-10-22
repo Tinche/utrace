@@ -1,8 +1,19 @@
 from asyncio import sleep
 from contextlib import contextmanager
+from functools import wraps
+from inspect import iscoroutinefunction
 from itertools import chain
 from os import urandom
-from typing import Callable, Final, Iterator, Literal, NoReturn, NotRequired, TypedDict
+from typing import (
+    Callable,
+    Final,
+    Iterator,
+    Literal,
+    NoReturn,
+    NotRequired,
+    TypedDict,
+    TypeVar,
+)
 
 from aiohttp import ClientSession
 from attrs import define
@@ -18,6 +29,9 @@ def trace_id_factory() -> str:
 
 def span_id_factory() -> str:
     return urandom(8).hex()
+
+
+AnyCallable = TypeVar("AnyCallable", bound=Callable)
 
 
 @define
@@ -38,7 +52,7 @@ class Tracer(TracerBase):
             "client", "server", "internal", "producer", "consumer"
         ] = "server",
         **kwargs: str | int,
-    ) -> Iterator[dict[str, str | int]]:
+    ) -> Iterator[Metadata]:
         """Start a trace and a span, trace_chance permitting.
 
         Args:
@@ -65,6 +79,36 @@ class Tracer(TracerBase):
     ) -> Iterator[Metadata]:
         with self._span(name, parent, kind=kind, **kwargs) as md:
             yield md
+
+    def spanning(self, name: str | None = None) -> Callable[[AnyCallable], AnyCallable]:
+        """
+        A decorator for starting spans, to be applied to methods and functions.
+        Works on both sync and async functions and methods.
+
+        Args:
+            name: If missing, defaults to the name of the decorated function.
+        """
+
+        def decorator(fn: AnyCallable) -> AnyCallable:
+            nonlocal name
+            span_name = name or fn.__name__
+
+            if iscoroutinefunction(fn):
+
+                @wraps(fn)
+                async def inner(*args, **kwargs):
+                    with self.span(span_name):
+                        return await fn(*args, **kwargs)
+            else:
+
+                @wraps(fn)
+                def inner(*args, **kwargs):
+                    with self.span(span_name):
+                        return fn(*args, **kwargs)
+
+            return inner  # type: ignore
+
+        return decorator
 
 
 class StringValue(TypedDict):

@@ -21,7 +21,10 @@ lint = [
     "ruff",
     "mypy",
 ]
-test = ["pytest"]
+test = ["pytest", "pytest-asyncio"]
 
 [project.urls]
 Home = "https://github.com/Tinche/utrace"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -2,16 +2,10 @@ from utrace import Span, Tracer
 
 
 def test_trace_and_span() -> None:
-    tracer = Tracer()
-
     all_spans: list[Span] = []
+    tracer = Tracer("service", receivers=[all_spans.extend])
 
-    def receiver(spans: list[Span]) -> None:
-        all_spans.extend(spans)
-
-    tracer.receivers.append(receiver)
-
-    with tracer.trace("trace", trace_metadata="test"):
+    with tracer.trace("trace", {"trace_metadata": "test"}):
         with tracer.span("span", span_metadata="span test"):
             pass
 
@@ -22,4 +16,4 @@ def test_trace_and_span() -> None:
     assert all_spans[0]["trace.trace_id"] == all_spans[1]["trace.trace_id"]
 
     assert all_spans[1]["name"] == "trace"
-    assert all_spans[1]["trace_metadata"] == "test"  # type: ignore
+    assert all_spans[1]["trace_metadata"] == {"trace_metadata": "test"}  # type: ignore

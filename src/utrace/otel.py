@@ -1,5 +1,6 @@
 from asyncio import sleep
 from contextlib import contextmanager
+from itertools import chain
 from os import urandom
 from typing import Callable, Final, Iterator, Literal, NoReturn, NotRequired, TypedDict
 
@@ -203,7 +204,7 @@ def _utrace_span_to_otel(span: USpan) -> Span:
                 "key": k,
                 "value": {"stringValue": v} if isinstance(v, str) else {"intValue": v},  # type: ignore
             }
-            for k, v in span["metadata"].items()
+            for k, v in chain(span["trace_metadata"].items(), span["metadata"].items())
             if k != "kind"
         ],
     }

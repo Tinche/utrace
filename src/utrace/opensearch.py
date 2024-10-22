@@ -1,5 +1,6 @@
-from . import Span
 from datetime import datetime
+
+from . import Span
 
 
 def encode_trace(spans: list[Span]) -> None:
@@ -37,7 +38,7 @@ def encode_trace(spans: list[Span]) -> None:
                     span["time"] + (span["duration_ms"] / 1000)
                 ).isoformat(timespec="microseconds")
             ),
-            "serviceName": span["service.name"],
+            "serviceName": span["tracer_metadata"]["service.name"],
             "durationInNanos": int(span["duration_ms"] * 1_000_000),
             "parentSpanId": span.get("trace.parent_id", ""),
         }

@@ -8,20 +8,17 @@ from itertools import count
 from random import random
 from secrets import token_hex
 from time import perf_counter, time
-from typing import Callable, Iterator, Mapping, NotRequired, TypedDict
+from typing import Any, Callable, Iterator, Mapping, NotRequired, TypedDict
 
-from attrs import Factory, define
+from attrs import Factory, define, field
 from rich import print as rich_print
 from rich.columns import Columns
 from rich.console import Group
 from rich.text import Text
 from rich.tree import Tree
 
-__all__ = ["Span", "Tracer", "TracerBase"]
+__all__ = ["Span", "Tracer", "TracerBase", "TraceId", "SpanId", "Metadata"]
 
-_trace_cnt = count().__next__
-_span_cnt = count().__next__
-_trace_prefix = token_hex(8)
 
 type Instant = float
 type DurationMS = float  # Milliseconds
@@ -33,13 +30,22 @@ Span = TypedDict(
         "name": str,
         "time": Instant,
         "duration_ms": DurationMS,
-        "service.name": str,
         "trace.trace_id": str,
         "trace.span_id": str,
         "trace.parent_id": NotRequired[str],
         "metadata": Metadata,
+        "trace_metadata": Metadata,
+        "tracer_metadata": Metadata,
     },
 )
+
+type TraceId = str
+type SpanId = str
+
+
+_trace_cnt = count().__next__
+_span_cnt = count().__next__
+_trace_prefix = token_hex(8)
 
 
 @define
@@ -49,22 +55,31 @@ class TracerBase:
     public APIS.
     """
 
-    metadata: dict[str, str] = {}  # Should contain service.name.
-    receivers: list[Callable[[list[Span]], None]] = []
+    service_name: str
+    metadata: Metadata = Factory(dict)
+    receivers: list[Callable[[list[Span]], Any]] = []
     trace_chance: float | None = None
-    _trace_id_factory: Callable[[], str] = lambda: f"{_trace_prefix}:{_trace_cnt()}"
-    _span_id_factory: Callable[[], str] = lambda: f"{_trace_prefix}:{_span_cnt()}"
-    _active_trace_and_span: ContextVar[tuple[str, str, list[Span]] | None] = Factory(
-        lambda: ContextVar("active", default=None)
-    )
+    _trace_id_factory: Callable[[], TraceId] = lambda: f"{_trace_prefix}:{_trace_cnt()}"
+    _span_id_factory: Callable[[], SpanId] = lambda: f"{_trace_prefix}:{_span_cnt()}"
+    _active_trace_and_span: ContextVar[
+        tuple[TraceId, Metadata, SpanId, list[Span]] | None
+    ] = field(factory=lambda: ContextVar("active", default=None), init=False)
+
+    def __attrs_post_init(self) -> None:
+        self.metadata["service.name"] = self.service_name
 
     @contextmanager
     def _trace(
-        self, name: str, span_metadata: dict[str, str | int] = {}, **kwargs: str | int
+        self,
+        name: str,
+        trace_metadata: dict[str, str | int] = {},
+        /,
+        **kwargs: str | int,
     ) -> Iterator[dict[str, str | int]]:
         """Start a trace and a span, trace_chance permitting.
 
-        Return a dictionary that can be used to add metadata.
+        Returns:
+            A dictionary that can be used to add metadata.
         """
         if self.trace_chance is not None and random() > self.trace_chance:
             yield {}
@@ -73,28 +88,30 @@ class TracerBase:
         span_id = self._span_id_factory()
         start = time()
         duration_start = perf_counter()
-        trace_metadata = kwargs
+        span_metadata = kwargs
         child_spans: list[Span] = []
-        token = self._active_trace_and_span.set((trace_id, span_id, child_spans))
+        token = self._active_trace_and_span.set(
+            (trace_id, trace_metadata, span_id, child_spans)
+        )
         try:
-            yield trace_metadata
+            yield span_metadata
         except BaseException as exc:
-            trace_metadata["error"] = repr(exc)
+            span_metadata["error"] = repr(exc)
             raise
         finally:
             self._active_trace_and_span.reset(token)
             duration = perf_counter() - duration_start
             child_spans.append(
-                self.metadata  # type: ignore
-                | {
+                {
                     "name": name,
                     "time": start,
                     "duration_ms": duration * 1000,
                     "trace.trace_id": trace_id,
                     "trace.span_id": span_id,
                     "metadata": span_metadata,
+                    "trace_metadata": trace_metadata,
+                    "tracer_metadata": self.metadata,
                 }
-                | trace_metadata
             )
             self._emit(child_spans)
 
@@ -102,21 +119,23 @@ class TracerBase:
     def _span(
         self,
         name: str,
-        parent: tuple[str, str, list[Span]] | None = None,
+        parent: tuple[TraceId, Metadata, SpanId, list[Span]] | None = None,
         **kwargs: str | int,
     ) -> Iterator[dict[str, str | int]]:
         """Start a new span, if there is a trace active."""
         parent = parent or self._active_trace_and_span.get()
-        span_metadata: dict[str, str | int] = kwargs
+        span_metadata: Metadata = kwargs
         if parent is None:
             yield span_metadata
             return
 
-        trace_id, parent_span_id, children = parent
+        trace_id, trace_metadata, parent_span_id, children = parent
         start = time()
         duration_start = perf_counter()
         span_id = self._span_id_factory()
-        token = self._active_trace_and_span.set((trace_id, span_id, children))
+        token = self._active_trace_and_span.set(
+            (trace_id, trace_metadata, span_id, children)
+        )
         try:
             yield span_metadata
         except BaseException as exc:
@@ -126,8 +145,7 @@ class TracerBase:
             self._active_trace_and_span.reset(token)
             duration = perf_counter() - duration_start
             children.append(
-                self.metadata  # type: ignore
-                | {
+                {
                     "name": name,
                     "time": start,
                     "duration_ms": duration * 1000,
@@ -135,6 +153,8 @@ class TracerBase:
                     "trace.span_id": span_id,
                     "trace.parent_id": parent_span_id,
                     "metadata": span_metadata,
+                    "trace_metadata": trace_metadata,
+                    "tracer_metadata": self.metadata,
                 }
             )
 
@@ -161,9 +181,9 @@ class Tracer(TracerBase):
     def span(
         self,
         name: str,
-        parent: tuple[str, str, list[Span]] | None = None,
+        parent: tuple[TraceId, Metadata, SpanId, list[Span]] | None = None,
         **kwargs: str | int,
-    ) -> Iterator[dict[str, str | int]]:
+    ) -> Iterator[Metadata]:
         """Start a new span, if there is a trace active."""
         with self._span(name, parent, **kwargs) as md:
             yield md
@@ -171,7 +191,7 @@ class Tracer(TracerBase):
     @contextmanager
     def span_from_dict(
         self, name: str, parent_dict: Mapping[str, str], **kwargs: str
-    ) -> Iterator[dict[str, str | int]]:
+    ) -> Iterator[Metadata]:
         """Start a child span, if possible."""
         if "_trace" not in parent_dict:
             yield {}
@@ -180,7 +200,7 @@ class Tracer(TracerBase):
         children: list[Span] = []
         try:
             with self.span(
-                name, (trace_id, parent_id, children), **kwargs
+                name, (trace_id, {}, parent_id, children), **kwargs
             ) as span_metadata:
                 yield span_metadata
         finally:
